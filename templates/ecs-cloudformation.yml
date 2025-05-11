@@ -12,6 +12,14 @@ Parameters:
     Default: cashflow-api/dev
     Description: Registry
 
+  CognitoUserPoolName:
+    Type: String
+    Default: cashflow-user-pool
+
+  CognitoAppClientName:
+    Type: String
+    Default: cashflow-app-client
+
 Resources:
   CashFlowVPC:
     Type: AWS::EC2::VPC
@@ -354,10 +362,88 @@ Resources:
       AutoDeploy: true
       ApiId: !Ref CashFlowHttpApiALB
 
+  CashFlowSwaggerRootRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn: CashFlowApiIntegration
+    Properties:
+      ApiId: !Ref CashFlowHttpApiALB
+      RouteKey: ANY /swagger
+      AuthorizationType: NONE
+      Target: !Join [ '/', [ 'integrations', !Ref CashFlowApiIntegration ] ]
+
+  CashFlowSwaggerAssetsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn: CashFlowApiIntegration
+    Properties:
+      ApiId: !Ref CashFlowHttpApiALB
+      RouteKey: ANY /swagger/{proxy+}
+      AuthorizationType: NONE
+      Target: !Join [ '/', [ 'integrations', !Ref CashFlowApiIntegration ] ]
+
   CashFlowApiGatewayRoute:
     Type: AWS::ApiGatewayV2::Route
     DependsOn: CashFlowApiIntegration
     Properties:
       ApiId: !Ref CashFlowHttpApiALB
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CashFlowHttpApiJwtAuthorizer
       RouteKey: ANY /cashflow-api/dev/{proxy+}
       Target: !Join [ '/', [ 'integrations', !Ref CashFlowApiIntegration ] ]
+
+  CashFlowCognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref CognitoUserPoolName
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: false
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Ref CognitoAppClientName
+      UserPoolId: !Ref CashFlowCognitoUserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      CallbackURLs:
+        - https://cashflow.com.br/callback
+      LogoutURLs:
+        - https://cashflow.com.br/signout
+      SupportedIdentityProviders:
+        - COGNITO
+
+  CashFlowCognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: cashflow-auth
+      UserPoolId: !Ref CashFlowCognitoUserPool
+
+  CashFlowHttpApiJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref CashFlowHttpApiALB
+      Name: cognito-jwt-authorizer
+      AuthorizerType: JWT
+      IdentitySource:
+        - '$request.header.Authorization'
+      JwtConfiguration:
+        Issuer: !Sub "https://cognito-idp.us-east-1.amazonaws.com/${CashFlowCognitoUserPool}"
+        Audience:
+          - !Ref CognitoUserPoolClient
