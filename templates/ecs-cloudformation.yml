@@ -255,7 +255,7 @@ Resources:
             - Name: ASPNETCORE_URLS
               Value: http://*:8090
             - Name: SWAGGER__CONTEXT_PATH
-              Value: /
+              Value: /cashflow-api/dev/
 
   CashFlowLogGroup:
     Type: AWS::Logs::LogGroup
