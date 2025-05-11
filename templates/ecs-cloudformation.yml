@@ -1,0 +1,363 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for cashflow-api stack
+
+Parameters:
+  VPCCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR for the VPC
+
+  ContainerRegistry:
+    Type: String
+    Default: cashflow-api/dev
+    Description: Registry
+
+Resources:
+  CashFlowVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: cashflow-vpc
+
+  CashFlowPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      CidrBlock: 10.0.10.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: cashflow-public-subnet1
+
+  CashFlowPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: cashflow-private-subnet1
+
+  CashFlowPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: cashflow-private-subnet2
+
+  CashFlowInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  CashFlowVPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      InternetGatewayId: !Ref CashFlowInternetGateway
+  
+  CashFlowPublicRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      Tags:
+        - Key: Name
+          Value: cashflow-public-route-table1
+
+  CashFlowPublicRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref CashFlowPublicRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CashFlowInternetGateway
+
+  CashFlowPublicRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CashFlowPublicSubnet1
+      RouteTableId: !Ref CashFlowPublicRouteTable1
+
+  CashFlowNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIPForNAT.AllocationId
+      SubnetId: !Ref CashFlowPublicSubnet1
+      Tags:
+        - Key: Name
+          Value: cashflow-ng
+
+  ElasticIPForNAT:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  CashFlowPrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      Tags:
+        - Key: Name
+          Value: cashflow-private-route-table1
+
+  CashFlowPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref CashFlowPrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref CashFlowNATGateway
+
+  PrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CashFlowPrivateSubnet1
+      RouteTableId: !Ref CashFlowPrivateRouteTable1
+
+  CashFlowExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cashflow-execution-role
+      RoleName: cashflow-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ECSTaskExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ec2:DescribeInstances
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:ListSecretVersionIds
+                  - secretsmanager:BatchGetSecretValue
+                  - sts:AssumeRole
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: '*'
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: arn:aws:logs:*:*:log-group:/ecs/*:*
+
+  CashFlowECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB
+      VpcId: !Ref CashFlowVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8090
+          ToPort: 8090
+          SourceSecurityGroupId: !Ref CashFlowALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: cashflow-ecs-security-group
+
+  CashFlowECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ContainerRegistry
+
+  CashFlowECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: cashflow-ecs-cluster
+
+  CashFlowECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - CashFlowInternalApplicationLoadBalancerListener
+    Properties:
+      Cluster: !Ref CashFlowECSCluster
+      TaskDefinition: !Ref CashFlowECSTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref CashFlowPrivateSubnet1
+          SecurityGroups:
+            - !Ref CashFlowECSSecurityGroup
+      LoadBalancers:
+        - TargetGroupArn: !Ref CashFlowInternalApplicationLoadBalancerTargetGroup
+          ContainerName: cashflow-api-container
+          ContainerPort: 8090
+      Tags:
+        - Key: Name
+          Value: cashflow-ecs-service
+
+  CashFlowECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: cashflow-api-task
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      TaskRoleArn: !Ref CashFlowExecutionRole
+      ExecutionRoleArn: !Ref CashFlowExecutionRole
+      Tags:
+        - Key: Name
+          Value: cashflow-ecs-task-definition
+      ContainerDefinitions:
+        - Name: cashflow-api-container
+          Image: 520557388939.dkr.ecr.us-east-1.amazonaws.com/cashflow-api/dev:latest
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8090
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/cashflow-api-logs
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: cashflow-api
+          Environment: 
+            - Name: ASPNETCORE_ENVIRONMENT
+              Value: Development
+            - Name: AWS_REGION
+              Value: us-east-1
+            - Name: CLOUD_WATCH__LOG_GROUP_NAME
+              Value: /ecs/cashflow-api-logs
+            - Name: CLOUD_WATCH__LOG_STREAM_NAME
+              Value: cashflow-api
+            - Name: SECRET_NAME__DB_CREDENTIALS
+              Value: CashFlowDbSecret
+            - Name: ASPNETCORE_URLS
+              Value: http://*:8090
+            - Name: SWAGGER__CONTEXT_PATH
+              Value: /
+
+  CashFlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/cashflow-api-logs
+      RetentionInDays: 7 
+
+  CashFlowInternalApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: cashflow-internal-alb
+      Subnets:
+        - !Ref CashFlowPrivateSubnet1
+        - !Ref CashFlowPrivateSubnet2
+      Scheme: internal
+      SecurityGroups:
+        - !Ref CashFlowALBSecurityGroup
+
+  CashFlowALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow API Gateway to ALB
+      VpcId: !Ref CashFlowVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cash-flow-alb-security-group
+
+  CashFlowInternalApplicationLoadBalancerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref CashFlowVPC
+      Port: 8090
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /api/health
+      Tags:
+        - Key: Name
+          Value: cashflow-internal-alb-target-group
+
+  CashFlowInternalApplicationLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref CashFlowInternalApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref CashFlowInternalApplicationLoadBalancerTargetGroup
+      Tags:
+        - Key: Name
+          Value: cashflow-internal-alb-listener
+
+  CashFlowPrivateVPCLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: CashFlowVpcLink
+      SubnetIds:
+        - !Ref CashFlowPrivateSubnet1
+        - !Ref CashFlowPrivateSubnet2
+      SecurityGroupIds:
+        - !Ref CashFlowALBSecurityGroup
+      Tags:
+          Key: Name
+          Value: cashflow-private-vpc-link
+
+  CashFlowHttpApiALB:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: cashflow-api-gateway-alb
+      ProtocolType: HTTP
+      Description: API Gateway to access the internal ALB via VPC Link
+          
+  CashFlowApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CashFlowHttpApiALB
+      Description: Private ALB Integration
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref CashFlowPrivateVPCLink
+      IntegrationUri: !GetAtt CashFlowInternalApplicationLoadBalancerListener.ListenerArn
+      PayloadFormatVersion: '1.0'
+      RequestParameters:
+        'overwrite:path': '/$request.path.proxy'
+  
+  CashFlowApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: $default
+      AutoDeploy: true
+      ApiId: !Ref CashFlowHttpApiALB
+
+  CashFlowApiGatewayRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn: CashFlowApiIntegration
+    Properties:
+      ApiId: !Ref CashFlowHttpApiALB
+      RouteKey: ANY /cashflow-api/dev/{proxy+}
+      Target: !Join [ '/', [ 'integrations', !Ref CashFlowApiIntegration ] ]
